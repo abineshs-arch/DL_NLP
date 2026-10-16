@@ -83,3 +83,39 @@ Using descriptive labels ("billing, payments or charges") and the template
 2. BERT outputs a label (Billing / Technical / Account), which is exactly what classification needs, and it is fast and cheap to fine-tune.
 3. Drafting a reply needs new text to be written; GPT is trained to predict the next word, so it naturally generates fluent sentences.
 4. So: BERT (encoder) to understand and route the ticket, GPT (decoder) to write the response.
+
+---
+
+# Week 3 Day 4 (Part 2): Fine-tuning with the Hugging Face Trainer API
+
+## Task 1: Prepare data and Trainer (`task1_prepare.py`)
+- Dataset: **dair-ai/emotion** (6 labels: sadness, joy, love, anger, fear, surprise)
+- 2,500 random rows, stratified split: **2,000 train / 500 validation**
+- Tokenised with `dataset.map(tokenize, batched=True)` (truncation, max_length 64)
+- Model: `AutoModelForSequenceClassification` (distilbert-base-uncased), `num_labels=6`
+- `DataCollatorWithPadding` pads each batch to the same length
+- TrainingArguments: learning_rate 2e-5, 3 epochs, batch size 16, evaluation every epoch
+- `compute_metrics`: accuracy and F1 (macro)
+- Running the script prints the dataset size, label distribution and "TRAINER READY"
+
+## Task 2: Fine-tune and evaluate (`task2_finetune.py`)
+- `Trainer.train()` on CPU; metrics printed after each epoch
+- Confusion matrix printed for the 500 validation rows
+- Model and tokenizer saved with `save_pretrained("emotion_model")` and reloaded with
+  `pipeline("text-classification", model="emotion_model")` to label 5 new sentences
+  (e.g. "I am really nervous about my exam tomorrow." -> **fear** 0.705)
+
+### Results (same 2,000 train / 500 validation split)
+| Model | Accuracy | F1 (macro) |
+|---|---|---|
+| **Fine-tuned DistilBERT** | **0.784** | **0.640** |
+| TF-IDF + Logistic Regression | 0.600 | 0.357 |
+
+### Observations
+1. Fine-tuning beats the TF-IDF baseline by ~18 accuracy points and almost doubles F1.
+2. DistilBERT already understands language from pre-training; fine-tuning only teaches it the 6 emotion labels.
+3. TF-IDF only sees which words appear, so it struggles when emotions are expressed with different words.
+4. F1 is lower than accuracy because rare classes (love, surprise) have few examples; more data or class weights would help.
+
+Note: `emotion_model/` (~270 MB) and `hf_output/` are in `.gitignore`, so they are not committed.
+Run `task2_finetune.py` to recreate the model.

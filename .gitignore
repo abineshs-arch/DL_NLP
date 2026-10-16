@@ -1,3 +1,5 @@
 __pycache__/
 *.gz
 glove50.npz
+hf_output/
+emotion_model/
