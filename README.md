@@ -1,38 +1,85 @@
-# Week 3 Day 3 (Part 2): NLP Basics
+# Week 3 Day 4 (Part 1): Hugging Face - Tokenisers, Pipelines, BERT vs GPT
 
-## Task 1: Preprocessing and TF-IDF (`task1_tfidf.py`)
-- Preprocessing: lowercase, remove punctuation, tokenise (split into words)
-- TF-IDF matrix shape: **(6, 32)** (6 tickets, 32 unique words)
-- Top words in ticket 1: was, twice, subscription, charged (0.441), for (0.361)
-- **Similarity result:** query "cannot log in to my account" is most similar to
-  **ticket 3: "Please reset my password, cannot log in"** (cosine similarity 0.733)
-- Classifier (TF-IDF + LogisticRegression, 30 tickets, 3 classes):
-  - Test accuracy: 0.556 (only 9 test tickets, so not reliable)
-  - 5-fold cross-validation accuracy: **0.833 ± 0.105** (more reliable)
+## Task 1: Tokenisers and Pipelines (`task1_pipelines.py`)
 
-### What TF-IDF does
-1. **TF (term frequency):** how often a word appears in this document.
-2. **IDF (inverse document frequency):** words that appear in many documents (like "the") get a low weight; rare words get a high weight.
-3. **TF × IDF:** a word scores high when it is frequent in this document but rare in others, so it describes this document well.
+### AutoTokenizer (distilbert-base-uncased)
+- Every sentence gets `[CLS]` at the start and `[SEP]` at the end
+- Shorter sentences are padded with `[PAD]` (id 0) and the **attention_mask is 0** there, so the model ignores padding
+- Example: "My payment failed twice." -> `[CLS] my payment failed twice . [SEP] [PAD] [PAD] [PAD]`
+  - input_ids: `[101, 2026, 7909, 3478, 3807, 1012, 102, 0, 0, 0]`
+  - attention_mask: `[1, 1, 1, 1, 1, 1, 1, 0, 0, 0]`
 
-## Task 2: Word embeddings (`task2_embeddings.py`)
-Used pre-trained **GloVe glove-wiki-gigaword-50** (400,000 words, 50 numbers each).
-gensim does not support Python 3.14 yet, so the same gensim-data file is loaded with NumPy.
+**Sub-word tokens** (rare words are split into known pieces, `##` = continues previous piece):
+| Word | Tokens |
+|---|---|
+| tokenisation | token, ##isation |
+| unbelievably | un, ##bel, ##ie, ##va, ##bly |
+| yoho | yo, ##ho |
+| chennai | chennai (common enough to be one token) |
 
-- 5 nearest to **king**: prince, queen, ii, emperor, son
-- 5 nearest to **computer**: computers, software, technology, electronic, internet
-- **king − man + woman → queen** (0.852)
-
-| Sentence pair | Embeddings | TF-IDF |
+### Sentiment analysis pipeline
+| Text | Label | Score |
 |---|---|---|
-| "My payment failed" vs "The transaction was declined" | **0.700** | 0.000 |
-| "My payment failed" vs "The screen went black" | 0.483 | 0.000 |
+| The support team solved my problem quickly, thank you! | POSITIVE | 1.000 |
+| I have been waiting for a refund for two weeks. Terrible service. | NEGATIVE | 0.997 |
+| The new update is fantastic. | POSITIVE | 1.000 |
+| The app keeps crashing every time I open it. | NEGATIVE | 0.988 |
+| Delivery was okay, nothing special. | NEGATIVE | 0.996 |
 
-### Why embeddings beat TF-IDF
-1. TF-IDF only matches exact words, so "payment" and "transaction" look completely unrelated (similarity 0).
-2. Embeddings place words with similar meanings close together, so synonyms get high similarity.
-3. Embeddings are small and dense (50 numbers), while TF-IDF vectors are huge and mostly zeros.
-4. Embeddings capture relationships, e.g. king − man + woman ≈ queen.
+Note: the model (SST-2) only has POSITIVE/NEGATIVE, no NEUTRAL, so a neutral sentence is forced into one side.
 
-## Bonus: PCA plot
-`glove_pca.png` shows 30 word vectors in 2D. Similar words (royalty, tech, cities, animals, food) form groups.
+### NER pipeline (dslim/bert-base-NER, aggregation_strategy="simple")
+Text: "Ravi from Yoho Technologies paid Rs. 45000 in Chennai on 12 March"
+| Entity | Type | Score |
+|---|---|---|
+| Ravi | PER (person) | 0.999 |
+| Yoho Technologies | ORG (organisation) | 0.999 |
+| Chennai | LOC (location) | 0.999 |
+
+Note: "Rs. 45000" and "12 March" were not detected - this model only knows PER, ORG, LOC and MISC (no MONEY or DATE).
+
+### Zero-shot classification (facebook/bart-large-mnli)
+| Ticket | Prediction |
+|---|---|
+| I was charged twice for my subscription this month | **Billing** 0.86 |
+| The app freezes when I upload a photo | **Technical** 0.92 |
+| I forgot my password and cannot sign in | **Account** 0.91 |
+
+With single-word labels ("Billing") the first ticket was wrongly predicted as Account (0.55).
+Using descriptive labels ("billing, payments or charges") and the template
+"This customer support ticket is about {}." fixed it.
+
+## Task 2: BERT vs GPT (`task2_bert_gpt.py`)
+
+### BERT fill-mask (bert-base-uncased)
+| Sentence | Top 3 predictions |
+|---|---|
+| I was [MASK] twice for my subscription. | paid (0.08), arrested (0.07), asked (0.06) |
+| Please reset my [MASK] because I cannot log in. | account (0.13), computer (0.12), password (0.11) |
+| Chennai is a big city in [MASK]. | **india (0.98)**, kerala (0.01), chennai (0.01) |
+
+### GPT-2 text generation (temperature 0.7, max_new_tokens 30)
+- "Dear customer, thank you for contacting support. We" -> "...appreciate your patience and we will be happy to assist you in any way we can."
+- "The best way to learn machine learning is" -> "...to look at the various types of data and how it relates to what you're learning."
+- "Our new mobile app helps users" -> "...find the best places to eat and drink in their community."
+
+### Parameter count
+| Model | Parameters |
+|---|---|
+| BERT (bert-base-uncased) | 109,514,298 (~110M) |
+| GPT-2 (gpt2) | 124,439,808 (~124M) |
+
+### Comparison table
+| | BERT | GPT |
+|---|---|---|
+| Architecture | Transformer **encoder** | Transformer **decoder** |
+| Reads / writes | Reads the whole sentence in **both directions** at once | Reads **left to right** and writes the next word, one at a time |
+| Training task | Fill in masked (hidden) words | Predict the next word |
+| Best for | **Understanding** text | **Generating** text |
+| Example tasks | Classification, NER, sentiment, search, fill-mask | Chatbots, drafting emails/replies, summaries, story writing |
+
+### Why BERT for ticket classification and GPT for drafting replies
+1. Ticket classification needs understanding of the whole ticket; BERT reads every word with context from both sides.
+2. BERT outputs a label (Billing / Technical / Account), which is exactly what classification needs, and it is fast and cheap to fine-tune.
+3. Drafting a reply needs new text to be written; GPT is trained to predict the next word, so it naturally generates fluent sentences.
+4. So: BERT (encoder) to understand and route the ticket, GPT (decoder) to write the response.
