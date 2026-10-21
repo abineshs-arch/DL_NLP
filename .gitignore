@@ -3,3 +3,5 @@ __pycache__/
 glove50.npz
 hf_output/
 emotion_model/
+distilbert_category/
+.pytest_cache/

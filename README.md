@@ -1,121 +1,120 @@
-# Week 3 Day 4 (Part 1): Hugging Face - Tokenisers, Pipelines, BERT vs GPT
+# Customer Support Ticket Classifier
 
-## Task 1: Tokenisers and Pipelines (`task1_pipelines.py`)
+Classifies a support ticket into a **category** (queue) and a **priority** (low / medium / high)
+and serves the model through a **FastAPI** endpoint.
+Branch: `feature/ticket-classifier` - all project files are in `ticket_classifier/`.
 
-### AutoTokenizer (distilbert-base-uncased)
-- Every sentence gets `[CLS]` at the start and `[SEP]` at the end
-- Shorter sentences are padded with `[PAD]` (id 0) and the **attention_mask is 0** there, so the model ignores padding
-- Example: "My payment failed twice." -> `[CLS] my payment failed twice . [SEP] [PAD] [PAD] [PAD]`
-  - input_ids: `[101, 2026, 7909, 3478, 3807, 1012, 102, 0, 0, 0]`
-  - attention_mask: `[1, 1, 1, 1, 1, 1, 1, 0, 0, 0]`
-
-**Sub-word tokens** (rare words are split into known pieces, `##` = continues previous piece):
-| Word | Tokens |
+| File | Purpose |
 |---|---|
-| tokenisation | token, ##isation |
-| unbelievably | un, ##bel, ##ie, ##va, ##bly |
-| yoho | yo, ##ho |
-| chennai | chennai (common enough to be one token) |
-
-### Sentiment analysis pipeline
-| Text | Label | Score |
-|---|---|---|
-| The support team solved my problem quickly, thank you! | POSITIVE | 1.000 |
-| I have been waiting for a refund for two weeks. Terrible service. | NEGATIVE | 0.997 |
-| The new update is fantastic. | POSITIVE | 1.000 |
-| The app keeps crashing every time I open it. | NEGATIVE | 0.988 |
-| Delivery was okay, nothing special. | NEGATIVE | 0.996 |
-
-Note: the model (SST-2) only has POSITIVE/NEGATIVE, no NEUTRAL, so a neutral sentence is forced into one side.
-
-### NER pipeline (dslim/bert-base-NER, aggregation_strategy="simple")
-Text: "Ravi from Yoho Technologies paid Rs. 45000 in Chennai on 12 March"
-| Entity | Type | Score |
-|---|---|---|
-| Ravi | PER (person) | 0.999 |
-| Yoho Technologies | ORG (organisation) | 0.999 |
-| Chennai | LOC (location) | 0.999 |
-
-Note: "Rs. 45000" and "12 March" were not detected - this model only knows PER, ORG, LOC and MISC (no MONEY or DATE).
-
-### Zero-shot classification (facebook/bart-large-mnli)
-| Ticket | Prediction |
-|---|---|
-| I was charged twice for my subscription this month | **Billing** 0.86 |
-| The app freezes when I upload a photo | **Technical** 0.92 |
-| I forgot my password and cannot sign in | **Account** 0.91 |
-
-With single-word labels ("Billing") the first ticket was wrongly predicted as Account (0.55).
-Using descriptive labels ("billing, payments or charges") and the template
-"This customer support ticket is about {}." fixed it.
-
-## Task 2: BERT vs GPT (`task2_bert_gpt.py`)
-
-### BERT fill-mask (bert-base-uncased)
-| Sentence | Top 3 predictions |
-|---|---|
-| I was [MASK] twice for my subscription. | paid (0.08), arrested (0.07), asked (0.06) |
-| Please reset my [MASK] because I cannot log in. | account (0.13), computer (0.12), password (0.11) |
-| Chennai is a big city in [MASK]. | **india (0.98)**, kerala (0.01), chennai (0.01) |
-
-### GPT-2 text generation (temperature 0.7, max_new_tokens 30)
-- "Dear customer, thank you for contacting support. We" -> "...appreciate your patience and we will be happy to assist you in any way we can."
-- "The best way to learn machine learning is" -> "...to look at the various types of data and how it relates to what you're learning."
-- "Our new mobile app helps users" -> "...find the best places to eat and drink in their community."
-
-### Parameter count
-| Model | Parameters |
-|---|---|
-| BERT (bert-base-uncased) | 109,514,298 (~110M) |
-| GPT-2 (gpt2) | 124,439,808 (~124M) |
-
-### Comparison table
-| | BERT | GPT |
-|---|---|---|
-| Architecture | Transformer **encoder** | Transformer **decoder** |
-| Reads / writes | Reads the whole sentence in **both directions** at once | Reads **left to right** and writes the next word, one at a time |
-| Training task | Fill in masked (hidden) words | Predict the next word |
-| Best for | **Understanding** text | **Generating** text |
-| Example tasks | Classification, NER, sentiment, search, fill-mask | Chatbots, drafting emails/replies, summaries, story writing |
-
-### Why BERT for ticket classification and GPT for drafting replies
-1. Ticket classification needs understanding of the whole ticket; BERT reads every word with context from both sides.
-2. BERT outputs a label (Billing / Technical / Account), which is exactly what classification needs, and it is fast and cheap to fine-tune.
-3. Drafting a reply needs new text to be written; GPT is trained to predict the next word, so it naturally generates fluent sentences.
-4. So: BERT (encoder) to understand and route the ticket, GPT (decoder) to write the response.
+| `task1_prepare_data.py` | Clean data, class balance, 70/15/15 stratified split |
+| `task2_baseline.py` | TF-IDF + Logistic Regression baselines, tuning, error analysis |
+| `task3_finetune_compare.py` | Fine-tune DistilBERT and compare with the baseline |
+| `app.py` | FastAPI service: `POST /predict`, `GET /health` |
+| `test_app.py` | 6 pytest tests with TestClient |
 
 ---
 
-# Week 3 Day 4 (Part 2): Fine-tuning with the Hugging Face Trainer API
+## 1. Dataset
+- **Source:** Kaggle - *Customer IT Support - Ticket Dataset* by Tobias Bueck
+  (`dataset-tickets-multi-lang3-4k.csv`, saved as `tickets_raw.csv`)
+- `subject` + `body` -> **text**, `queue` -> **category**, `priority` -> **priority**
+- 4,000 tickets in 5 languages (en 1,391, de 848, es 812, fr 476, pt 473) - **English only: 1,391**
+- Cleaning: lowercase, trim spaces, remove empty/duplicate tickets (0 duplicates);
+  queues with < 30 tickets (General Inquiry, Human Resources) merged into **Other**
+- Split 70/15/15 stratified on category: **train 973 | validation 209 | test 209**
+  (priority stayed balanced: high ~43%, medium ~40%, low ~17-21%)
 
-## Task 1: Prepare data and Trainer (`task1_prepare.py`)
-- Dataset: **dair-ai/emotion** (6 labels: sadness, joy, love, anger, fear, surprise)
-- 2,500 random rows, stratified split: **2,000 train / 500 validation**
-- Tokenised with `dataset.map(tokenize, batched=True)` (truncation, max_length 64)
-- Model: `AutoModelForSequenceClassification` (distilbert-base-uncased), `num_labels=6`
-- `DataCollatorWithPadding` pads each batch to the same length
-- TrainingArguments: learning_rate 2e-5, 3 epochs, batch size 16, evaluation every epoch
-- `compute_metrics`: accuracy and F1 (macro)
-- Running the script prints the dataset size, label distribution and "TRAINER READY"
+Class balance (validation, 209 tickets): Technical Support 71, Product Support 36, Customer Service 32,
+IT Support 25, Billing and Payments 18, Returns and Exchanges 9, Service Outages 7, Sales 6, Other 5
+- **imbalanced**, so macro F1 is reported next to accuracy.
 
-## Task 2: Fine-tune and evaluate (`task2_finetune.py`)
-- `Trainer.train()` on CPU; metrics printed after each epoch
-- Confusion matrix printed for the 500 validation rows
-- Model and tokenizer saved with `save_pretrained("emotion_model")` and reloaded with
-  `pipeline("text-classification", model="emotion_model")` to label 5 new sentences
-  (e.g. "I am really nervous about my exam tomorrow." -> **fear** 0.705)
+## 2. Baseline: TF-IDF + Logistic Regression
+- `TfidfVectorizer(min_df=2, sublinear_tf=True)` + `LogisticRegression(class_weight="balanced")`
+- 5-fold GridSearchCV over `ngram_range` [(1,1),(1,2)] and `C` [0.1, 1, 10], scoring = macro F1
 
-### Results (same 2,000 train / 500 validation split)
-| Model | Accuracy | F1 (macro) |
-|---|---|---|
-| **Fine-tuned DistilBERT** | **0.784** | **0.640** |
-| TF-IDF + Logistic Regression | 0.600 | 0.357 |
+| Label | Best params | Val accuracy | Val macro F1 |
+|---|---|---|---|
+| Category | C=10, ngram (1,1) | 0.507 | 0.566 |
+| Priority | C=1, ngram (1,1) | 0.612 | 0.595 |
 
-### Observations
-1. Fine-tuning beats the TF-IDF baseline by ~18 accuracy points and almost doubles F1.
-2. DistilBERT already understands language from pre-training; fine-tuning only teaches it the 6 emotion labels.
-3. TF-IDF only sees which words appear, so it struggles when emotions are expressed with different words.
-4. F1 is lower than accuracy because rare classes (love, surprise) have few examples; more data or class weights would help.
+**Error analysis (10 most confusing tickets):** most errors are between Technical Support, Product Support,
+IT Support and Customer Service - they use the same vocabulary ("issue", "software", "connectivity") and some
+labels look inconsistent. Many tickets share the template "I hope this message finds you well...", which adds noise.
+Billing is easy (16/18 correct) because of unique words (invoice, charge, refund).
+Priority depends on urgency, not topic words, so low vs medium is hard.
 
-Note: `emotion_model/` (~270 MB) and `hf_output/` are in `.gitignore`, so they are not committed.
-Run `task2_finetune.py` to recreate the model.
+## 3. Fine-tuned DistilBERT vs baseline (category)
+DistilBERT fine-tuned with the Trainer API (lr 5e-5, 3 epochs, batch 16, max_length 128, CPU).
+Validation F1 per epoch: 0.195 -> 0.311 -> 0.353 (still improving = under-trained).
+
+| Model | Split | Accuracy | Macro F1 | Training time | Inference / ticket |
+|---|---|---|---|---|---|
+| TF-IDF + LogReg | validation | **0.507** | **0.566** | **0.4 s** | **0.09 ms** |
+| TF-IDF + LogReg | test | **0.493** | **0.470** | **0.4 s** | **0.09 ms** |
+| DistilBERT | validation | 0.502 | 0.353 | 910 s | 78 ms |
+| DistilBERT | test | 0.474 | 0.306 | 910 s | 77 ms |
+
+- **DistilBERT wins** on Technical Support (F1 0.616 vs 0.545), the largest class.
+- It scores **0** on small classes (IT Support, Sales, Other) - with 973 tickets and 3 CPU epochs it never learned them.
+- **The baseline is good enough** for clear classes: Billing 0.84, Returns 0.70.
+
+### Model chosen for deployment: TF-IDF + Logistic Regression
+1. **Better quality now:** test macro F1 0.470 vs 0.306, similar accuracy.
+2. **Speed:** ~0.09 ms per ticket vs ~77 ms - about 870x faster.
+3. **Cost:** trains in < 1 s, a few MB model, runs on a cheap CPU server; DistilBERT needs ~15 min and a ~270 MB model.
+4. **Fairness to small queues:** the baseline still predicts IT Support, Sales and Other.
+5. **Revisit later:** with more data, a GPU and more epochs DistilBERT should overtake it - re-run the comparison then.
+
+## 4. API (`app.py`)
+- Models are loaded **once at startup** (FastAPI `lifespan`), not on every request
+- Input validated with **Pydantic**: empty or whitespace-only text returns **422**
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/health` | - | `{"status": "ok", "models_loaded": true}` |
+| POST | `/predict` | `{"text": "..."}` | category, priority, confidence, priority_confidence |
+
+### Run steps (Windows, from the `DL_NLP` folder)
+```powershell
+# 1. install
+python -m pip install fastapi uvicorn httpx pytest scikit-learn pandas joblib
+
+# 2. (only if the .joblib files are missing) rebuild data and models
+python ticket_classifier/task1_prepare_data.py
+python ticket_classifier/task2_baseline.py
+
+# 3. start the API
+python -m uvicorn app:app --app-dir ticket_classifier
+
+# 4. open the interactive docs
+#    http://127.0.0.1:8000/docs
+```
+
+### Example requests
+```bash
+curl http://127.0.0.1:8000/health
+
+curl -X POST http://127.0.0.1:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"text": "I was charged twice for my subscription, please refund"}'
+```
+Response:
+```json
+{"category": "Billing and Payments", "priority": "Medium", "confidence": 0.821, "priority_confidence": 0.463}
+```
+PowerShell alternative:
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/predict -ContentType "application/json" -Body '{"text": "I was charged twice"}'
+```
+
+### Tests
+```powershell
+python -m pytest ticket_classifier -v
+```
+6 passed: health, valid prediction, empty text 422, spaces-only 422, missing field 422, wrong type 422.
+
+## 5. Limitations
+- Category accuracy is ~50%: similar support queues overlap heavily and labels are noisy.
+- Trained only on 1,391 English tickets; other languages are not supported.
+- `confidence` is the model's probability, not a guarantee - low-confidence tickets should go to a human.
+- `distilbert_category/` (~270 MB) is not committed; run `task3_finetune_compare.py` to recreate it.
