@@ -1,80 +1,48 @@
-# Customer Support Ticket Classifier (Weekly Project - Part 1)
+---
 
-Classify support tickets by **category** (queue) and **priority** (low / medium / high).
-Branch: `feature/ticket-classifier`
+# Part 2 - Task 1: Fine-tuned DistilBERT vs Baseline (`task3_finetune_compare.py`)
 
-## Dataset
-- **Source:** Kaggle - *Customer IT Support - Ticket Dataset* by Tobias Bueck
-  (file `dataset-tickets-multi-lang3-4k.csv`, saved here as `tickets_raw.csv`)
-- Columns used: `subject` + `body` -> **text**, `queue` -> **category**, `priority` -> **priority**
-- 4,000 tickets in 5 languages (en 1,391, de 848, es 812, fr 476, pt 473) - **only English kept: 1,391 tickets**
+DistilBERT (distilbert-base-uncased) fine-tuned for **category** with the Trainer API
+(lr 5e-5, 3 epochs, batch 16, max_length 128, CPU). Priority keeps the TF-IDF baseline.
 
-### Cleaning (`task1_prepare_data.py`)
-- Joined subject + body, lowercased, trimmed extra spaces
-- Removed empty tickets and duplicates (0 duplicates found)
-- Merged queues with fewer than 30 tickets (General Inquiry, Human Resources) into **Other**
-
-### Split (70 / 15 / 15, stratified)
-| Split | Rows |
-|---|---|
-| train | 973 |
-| validation | 209 |
-| test | 209 |
-
-Stratified on category (some category + priority combinations were too small to stratify on both).
-Priority stayed balanced in every split: high ~43%, medium ~40%, low ~17-21%.
-
-### Class balance (validation split, 209 tickets)
-| Category | Count | | Priority | Count |
-|---|---|---|---|---|
-| Technical Support | 71 | | medium | 87 |
-| Product Support | 36 | | high | 79 |
-| Customer Service | 32 | | low | 43 |
-| IT Support | 25 | | | |
-| Billing and Payments | 18 | | | |
-| Returns and Exchanges | 9 | | | |
-| Service Outages and Maintenance | 7 | | | |
-| Sales and Pre-Sales | 6 | | | |
-| Other | 5 | | | |
-
-The categories are **imbalanced** (Technical Support is ~34%, Other only ~2%), so **macro F1** is reported next to accuracy.
-
-## Baseline: TF-IDF + Logistic Regression (`task2_baseline.py`)
-- Two separate pipelines: one for **category**, one for **priority**
-- `TfidfVectorizer(min_df=2, sublinear_tf=True)` + `LogisticRegression(class_weight="balanced")`
-- Tuned `ngram_range` [(1,1), (1,2)] and `C` [0.1, 1, 10] with 5-fold GridSearchCV (scoring = macro F1)
-
-| Label | Best params | CV macro F1 | Val accuracy | Val macro F1 |
-|---|---|---|---|---|
-| Category | C=10, ngram (1,1) | 0.484 | **0.507** | **0.566** |
-| Priority | C=1, ngram (1,1) | 0.522 | **0.612** | **0.595** |
-
-Models saved with joblib: `baseline_category.joblib`, `baseline_priority.joblib`.
-
-### Priority confusion matrix (validation)
-| true \ predicted | high | low | medium |
+### DistilBERT per epoch (validation)
+| Epoch | Val loss | Accuracy | Macro F1 |
 |---|---|---|---|
-| high | 54 | 5 | 20 |
-| low | 4 | 21 | 18 |
-| medium | 18 | 16 | 53 |
+| 1 | 1.561 | 0.411 | 0.195 |
+| 2 | 1.398 | 0.483 | 0.311 |
+| 3 | 1.355 | 0.502 | 0.353 |
 
-### Error analysis - 10 most confusing tickets (and why)
-| # | True -> Predicted | Ticket (start) | Likely reason |
+### Comparison table (category)
+| Model | Split | Accuracy | Macro F1 | Training time | Inference time / ticket |
+|---|---|---|---|---|---|
+| TF-IDF + LogReg | validation | **0.507** | **0.566** | **0.4 s** | **0.09 ms** |
+| TF-IDF + LogReg | test | **0.493** | **0.470** | **0.4 s** | **0.09 ms** |
+| DistilBERT (fine-tuned) | validation | 0.502 | 0.353 | 910 s (~15 min) | 78 ms |
+| DistilBERT (fine-tuned) | test | 0.474 | 0.306 | 910 s (~15 min) | 77 ms |
+
+### Per-category F1 on test - where each model wins
+| Category | TF-IDF | DistilBERT | Winner |
 |---|---|---|---|
-| 1 | Other -> Technical Support | "outlook login failures through the organization's email portal..." | Login/email problem sounds technical; "Other" has very few examples |
-| 2 | Returns and Exchanges -> Technical Support | "the keyboard on my dell xps 13 9310 has ceased to operate..." | Describes a hardware fault, not the return request |
-| 3 | Sales and Pre-Sales -> Product Support | "issues with macbook air m1 purchased..." | Product name + "issues" look like support |
-| 4 | Product Support -> Technical Support | "request for assistance with slack integration issues..." | Product vs Technical Support use the same words |
-| 5 | IT Support -> Technical Support | "problem with norton antivirus plus subscription..." | IT and Technical Support overlap heavily |
-| 6 | Customer Service -> Technical Support | "network assessment request... connectivity issues..." | Technical words inside a service request |
-| 7 | Product Support -> Customer Service | "request for aws deployment guidance..." | Polite request style looks like Customer Service |
-| 8 | Customer Service -> Technical Support | "urgent jira issue... critical issue with jira software 8.20..." | Software bug words, but routed to Customer Service |
-| 9 | IT Support -> Customer Service | "hp deskjet 3755 connectivity issues dear tech online store customer support..." | "Customer support" greeting misleads the model |
-| 10 | Technical Support -> Customer Service | "seeking wireless setup information for canon printer..." | Asking for information sounds like a service question |
+| Billing and Payments | 0.842 | 0.850 | tie |
+| Customer Service | 0.190 | 0.145 | TF-IDF |
+| IT Support | 0.464 | 0.000 | TF-IDF |
+| Other | 0.000 | 0.000 | tie |
+| Product Support | 0.469 | 0.449 | tie |
+| Returns and Exchanges | 0.700 | 0.471 | TF-IDF |
+| Sales and Pre-Sales | 0.400 | 0.000 | TF-IDF |
+| Service Outages and Maintenance | 0.615 | 0.222 | TF-IDF |
+| Technical Support | 0.545 | **0.616** | **DistilBERT** |
 
-### Observations
-1. **Billing** is easy (16/18 correct) - unique words like invoice, charge, refund.
-2. **Technical / Product / IT Support / Customer Service** are mixed up most - the same vocabulary appears in all four queues, and some labels look inconsistent.
-3. Many tickets start with the same template ("I hope this message finds you well..."), which adds noise for TF-IDF.
-4. **Priority** depends on urgency and business impact, not on topic words, so low vs medium is hard to separate.
-5. Next step (Part 2): fine-tune DistilBERT, which reads context instead of single words, and compare with this baseline.
+### Analysis
+- **DistilBERT wins** only on the largest class (Technical Support) - it learns the big classes first.
+- It scores **0** on small classes (IT Support, Sales, Other): with 973 tickets and 3 CPU epochs it never learned them.
+  F1 was still rising every epoch (0.195 -> 0.311 -> 0.353), so it is **under-trained**, not a bad model.
+- **The baseline is good enough** for clear-vocabulary classes (Billing 0.84, Returns 0.70) and is much fairer
+  to small classes thanks to `class_weight="balanced"`.
+
+### Model chosen for deployment: TF-IDF + Logistic Regression
+1. **Better quality now:** test macro F1 0.470 vs 0.306, and similar accuracy (0.493 vs 0.474).
+2. **Speed:** ~0.09 ms per ticket vs ~77 ms - about 870x faster, so it can handle many tickets per second on a cheap CPU server.
+3. **Cost:** trains in under 1 second and the model files are a few MB, vs ~15 min training and a ~270 MB model; no GPU needed.
+4. **Fairness to small queues:** DistilBERT ignores IT Support, Sales and Other; the baseline still predicts them.
+5. **When to switch:** with more labelled tickets, a GPU and more epochs, DistilBERT should overtake the baseline - re-run this comparison then.
